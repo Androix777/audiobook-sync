@@ -6,6 +6,9 @@ import math
 import numpy as np
 from rapidfuzz import fuzz
 from sudachipy import tokenizer, dictionary
+from itertools import groupby, pairwise
+from operator import itemgetter
+
 tokenizer_obj = dictionary.Dictionary().create(mode=tokenizer.Tokenizer.SplitMode.A)
 
 path_audio = "INSERT_AUDIO_FILE_NAME_HERE"
@@ -693,7 +696,78 @@ filtered_subs = [sub for sub in subs if sub["txt_i1"] != sub["txt_i2"]]
 #if match:
 #    filtered_subs[-1]["txt_i2"] += match.end(1)
 
-print("".join("■" if sub["txt_i1"] != sub["txt_i2"] else "□" for sub in subs))
+def print_stats(subs, txt, top_n = 5):
+    def truncate(text: str, max_len: int = 60) -> str:
+        text = " ".join(text.split())
+        return text if len(text) <= max_len else text[:max_len] + "…"
+
+    def has_text_match(sub) -> bool:
+        return sub["txt_i1"] != sub["txt_i2"]
+
+
+    print("".join("■" if has_text_match(s) else "□" for s in subs))
+
+
+    gaps = []
+    prev_matched_text = "(none)"
+    for is_gap, group in groupby(subs, key=lambda s: not has_text_match(s)):
+        group_list = list(group)
+        
+        if is_gap:
+            duration = group_list[-1]["end"] - group_list[0]["start"]
+            gaps.append((group_list[0]["start"], duration, prev_matched_text))
+        else:
+            prev_matched_text = truncate(txt[group_list[-1]["txt_i1"]:group_list[-1]["txt_i2"]])
+
+    matched_subs = sum(1 for s in subs if has_text_match(s))
+    subs_percent = (matched_subs / len(subs) * 100) if subs else 0
+    print(f"Subtitle coverage: {matched_subs}/{len(subs)} ({subs_percent:.1f}%)")
+
+    print("Subtitle only gaps:")
+    if gaps:
+        for start, dur, prev in sorted(gaps, key=itemgetter(1), reverse=True)[:top_n]:
+            print(f"- Start: {seconds_to_srt_format(start)}")
+            print(f"  Duration: {dur:.2f}s")
+            print(f"  After subtitle: {prev}\n")
+    else:
+        print("  none")
+
+
+    matched = sorted((s["txt_i1"], s["txt_i2"]) for s in subs if has_text_match(s))
+    
+    merged = []
+    for start, end in matched:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    text_gaps = [
+        (curr_end, next_start) 
+        for (_, curr_end), (next_start, _) in pairwise(merged) 
+        if curr_end < next_start
+    ]
+
+    if merged and merged[0][0] > 0:
+        text_gaps.insert(0, (0, merged[0][0]))
+
+    if merged and merged[-1][1] < len(txt):
+        text_gaps.append((merged[-1][1], len(txt)))
+
+    matched_chars = sum(end - start for start, end in merged)
+    text_percent = (matched_chars / len(txt) * 100) if txt else 0
+    print(f"Text coverage: {matched_chars}/{len(txt)} chars ({text_percent:.1f}%)")
+
+    print("Text only gaps:")
+    if text_gaps:
+        for start, end in sorted(text_gaps, key=lambda x: x[1] - x[0], reverse=True)[:top_n]:
+            snippet = truncate(txt[start:end]) or "(whitespace)"
+            print(f"- Size: {end - start} chars")
+            print(f"  Text start: {snippet}\n")
+    else:
+        print("  none")
+
+print_stats(subs, txt)
 
 def get_srt2(lines):
     srt = ""
