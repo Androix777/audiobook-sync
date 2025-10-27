@@ -26,6 +26,7 @@ speech_timestamps_chunk_size = 1 # anything other than "1" will be much faster (
 noise_detection_threshold = 50
 reading_window_size = 2500 # 2500 should be enough under most circumstances, 15000 needed for 告白 which includes a 25 minute audio book exclusive interview messing up the runtime estimation
 furigana_mode = "ignore"
+top_n_stats = 5
 
 fn_segments = f"{fn}_segments_{min_silence_duration_ms}ms.json"
 fn_whisper_results = f"{fn}_whisper_results_{min_silence_duration_ms}ms.json"
@@ -704,6 +705,9 @@ def print_stats(subs, txt, top_n = 5):
     def has_text_match(sub) -> bool:
         return sub["txt_i1"] != sub["txt_i2"]
 
+    if top_n <= 0:
+        return
+    
 
     print("".join("■" if has_text_match(s) else "□" for s in subs))
 
@@ -715,7 +719,8 @@ def print_stats(subs, txt, top_n = 5):
         
         if is_gap:
             duration = group_list[-1]["end"] - group_list[0]["start"]
-            gaps.append((group_list[0]["start"], duration, prev_matched_text))
+            first_sub = truncate(group_list[0].get("text", ""))
+            gaps.append((group_list[0]["start"], duration, prev_matched_text, first_sub))
         else:
             prev_matched_text = truncate(txt[group_list[-1]["txt_i1"]:group_list[-1]["txt_i2"]])
 
@@ -725,49 +730,51 @@ def print_stats(subs, txt, top_n = 5):
 
     print("Subtitle only gaps:")
     if gaps:
-        for start, dur, prev in sorted(gaps, key=itemgetter(1), reverse=True)[:top_n]:
+        for start, dur, prev, first in sorted(gaps, key=itemgetter(1), reverse=True)[:top_n]:
             print(f"- Start: {seconds_to_srt_format(start)}")
             print(f"  Duration: {dur:.2f}s")
-            print(f"  After subtitle: {prev}\n")
+            print(f"  After subtitle: {prev}")
+            print(f"  First subtitle: {first}\n")
     else:
         print("  none")
 
 
-    matched = sorted((s["txt_i1"], s["txt_i2"]) for s in subs if has_text_match(s))
+    matched = sorted((s["txt_i1"], s["txt_i2"], s["end"]) for s in subs if has_text_match(s))
     
     merged = []
-    for start, end in matched:
+    for start, end, end_time in matched:
         if merged and start <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end), end_time)
         else:
-            merged.append((start, end))
+            merged.append((start, end, end_time))
 
     text_gaps = [
-        (curr_end, next_start) 
-        for (_, curr_end), (next_start, _) in pairwise(merged) 
+        (curr_end, next_start, time) 
+        for (_, curr_end, time), (next_start, _, _) in pairwise(merged) 
         if curr_end < next_start
     ]
 
     if merged and merged[0][0] > 0:
-        text_gaps.insert(0, (0, merged[0][0]))
+        text_gaps.insert(0, (0, merged[0][0], 0.0))
 
     if merged and merged[-1][1] < len(txt):
-        text_gaps.append((merged[-1][1], len(txt)))
+        text_gaps.append((merged[-1][1], len(txt), merged[-1][2]))
 
-    matched_chars = sum(end - start for start, end in merged)
+    matched_chars = sum(end - start for start, end, _ in merged)
     text_percent = (matched_chars / len(txt) * 100) if txt else 0
     print(f"Text coverage: {matched_chars}/{len(txt)} chars ({text_percent:.1f}%)")
 
     print("Text only gaps:")
     if text_gaps:
-        for start, end in sorted(text_gaps, key=lambda x: x[1] - x[0], reverse=True)[:top_n]:
+        for start, end, time in sorted(text_gaps, key=lambda x: x[1] - x[0], reverse=True)[:top_n]:
             snippet = truncate(txt[start:end]) or "(whitespace)"
             print(f"- Size: {end - start} chars")
+            print(f"  Start time: {seconds_to_srt_format(time)}")
             print(f"  Text start: {snippet}\n")
     else:
         print("  none")
 
-print_stats(subs, txt)
+print_stats(subs, txt, top_n_stats)
 
 def get_srt2(lines):
     srt = ""
